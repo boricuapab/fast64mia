@@ -1,3 +1,7 @@
+# Native Maya integration
+
+This fork includes an initial native Maya plugin with Maya material conversion, vertex color painting, F3D/F3DEX2 static display-list export, F3D GLB export, and SM64 static collision export. It runs without Blender. Install by dragging `maya/install.py` into Maya, then enable `fast64Maya.py` in Plug-in Manager. See [Maya installation and supported features](maya/README.md). This is not a complete port of every Blender Fast64 tool.
+
 # Fast64
 
 This requires Blender 3.2 - 5.1.2. Blender 4.0+ is recommended.
