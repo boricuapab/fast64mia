@@ -14,7 +14,17 @@ def safely(function, *args, **kwargs):
     try:
         result = function(*args, **kwargs)
         if cmds.scrollField("fast64MayaStatus", exists=True):
-            cmds.scrollField("fast64MayaStatus", edit=True, text=json.dumps(result, indent=2, default=str))
+            summary=''
+            if isinstance(result,dict) and 'textureQC' in result:
+                lines=['Texture / UV export QC:']
+                for item in result['textureQC']:
+                    lines.append('{}: {} — {} -> {}'.format(item['material'],item['reason'],item['sourceSize'],item['exportSize']))
+                    if item['cropped']:
+                        for mesh in item['affectedMeshes']:
+                            lines.append('  Adjusted {} / {}: {} faces'.format(mesh['mesh'],mesh['uvSet'],len(mesh['faces'])))
+                lines.append('Full report: '+result.get('textureQCReport',''))
+                summary='\n'.join(lines)+'\n\n'
+            cmds.scrollField("fast64MayaStatus", edit=True, text=summary+json.dumps(result, indent=2, default=str))
         return result
     except Exception as error:
         cmds.warning("Fast64: " + str(error))
@@ -80,6 +90,14 @@ def show(*_):
     cmds.button(label="Convert Maya Materials to F3D (selected meshes)", command=lambda *_: safely(scene.convert_materials))
     cmds.button(label="Create and Assign F3D Material", command=lambda *_: safely(scene.create_material))
     cmds.button(label="Verify Actual Face Material Assignments", command=lambda *_: safely(scene.verify_material_assignments))
+    CONTROLS['resize'] = cmds.checkBox(label='Automatically resize exported textures to fit N64 TMEM',value=True)
+    CONTROLS['autocrop'] = cmds.checkBox(label='Automatically crop sparse decals / small UV regions (clamped textures)',value=True)
+    CONTROLS['texbits'] = cmds.optionMenuGrp(label='Texture format')
+    for label in ('RGBA32 (smooth alpha)', 'RGBA16 (one-bit alpha)'): cmds.menuItem(label=label)
+    CONTROLS['texmax'] = cmds.optionMenuGrp(label='Maximum texture dimension')
+    for label in ('32','64','128','256'): cmds.menuItem(label=label)
+    CONTROLS['decal'] = cmds.checkBox(label='Alpha texture over vertex colors (opaque surface)',value=False)
+    cmds.button(label='Apply Texture Options to Selected Mesh Materials',command=lambda *_: safely(texture_options))
     cmds.text(label="Lambert / Blinn / Phong / Phong E / Standard Surface. Diffuse + file textures + opacity.", align="left")
     cmds.text(label="Edit material Extra Attributes for F3D mode, render layer, texture, UVs, and collision surface.", align="left")
     cmds.setParent("..")
@@ -136,6 +154,15 @@ def show(*_):
 def show_animation_clips():
     from . import animation_clips
     return animation_clips.show()
+
+def texture_options():
+    from . import texture_tools
+    return texture_tools.configure_selected(
+        bits=32 if cmds.optionMenuGrp(CONTROLS['texbits'],q=True,select=True)==1 else 16,
+        maximum=int(cmds.optionMenuGrp(CONTROLS['texmax'],q=True,value=True)),
+        resize=cmds.checkBox(CONTROLS['resize'],q=True,value=True),
+        decal=cmds.checkBox(CONTROLS['decal'],q=True,value=True),
+        auto_crop=cmds.checkBox(CONTROLS['autocrop'],q=True,value=True))
 
 
 def export_glb():

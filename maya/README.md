@@ -53,6 +53,49 @@ must be baked first and are rejected.
 
 F3D attributes:
 
+The material panel includes automatic texture resizing, RGBA16/RGBA32, a maximum
+dimension, and **Alpha texture over vertex colors**. Apply the options after
+conversion. Resizing affects exported copies; source images remain unchanged.
+Power-of-two output dimensions are reduced further when necessary to fit 4 KiB
+of texture memory. RGBA32 retains smooth alpha and supports a 32×32 square;
+RGBA16 uses one-bit alpha and supports 64×32. High-resolution artwork inevitably
+loses detail when reduced.
+
+For eye decals, enable alpha-over-vertex colors. The F3D combiner blends texture
+RGB over painted RGB using texture alpha, while the surface stays opaque.
+Maya previews this with a layered texture and CPV Modulate. This feature and
+RGBA32 currently require **F3D GLB export**, rather than the static C exporter.
+Set `fast64AlternateTexture` in Extra Attributes to include a second texture
+alongside an animated GLB. Texture swapping itself needs a game runtime script.
+`fast64TextureCrop` optionally accepts `[x, y, width, height]` in source-image
+pixels: both states share the crop and exported UVs are adjusted. Use a padded
+crop with transparent borders and clamp wrapping for sparse decals.
+
+| Texture option | Extra Attribute |
+| --- | --- |
+| Automatic resizing | `fast64AutoResize` |
+| RGBA16 / RGBA32 | `fast64TextureBits` |
+| Maximum dimension | `fast64TextureMax` |
+| Alpha over vertex colors | `fast64AlphaOverVertex` |
+| Alternate source image | `fast64AlternateTexture` |
+| Shared crop rectangle | `fast64TextureCrop` |
+| Automatic cropping | `fast64AutoCrop` |
+
+Enable **Automatically crop sparse decals / small UV regions** and apply texture
+options before GLB export. Both texture axes must use clamp. Alpha decals use the
+union of all nontransparent pixels across both animation states, with a transparent
+filtering border. Other textures use the UV bounds of every exported face sharing
+the material, including UV placement. Repeating textures, out-of-image UV regions,
+unsafe decal borders, and crops saving less than 10% are skipped. A manual crop
+takes precedence. Automatic cropping is currently available for GLB export.
+
+Every GLB export writes `filename.glb.texture-qc.json` and returns the same QC
+information in the Fast64 status panel. It lists source and output texture names,
+source/output sizes, crop rectangle or skip reason, TMEM usage, and each affected
+mesh, UV set, face index, and source UV index. UV transforms are also embedded in the GLB's QC
+metadata. Only exported UVs are adjusted; the Maya UV sets and source files stay
+unchanged. Animated exports carry the report alongside their final GLB.
+
 | Attribute | Meaning |
 | --- | --- |
 | `fast64Mode` | Shaded, TextureShaded, VertexColor, TextureVertexColor, Primitive |

@@ -17,6 +17,85 @@ from fast64_maya import core, scene, paint
 
 
 class NativeTests(unittest.TestCase):
+    def test_automatic_crop_shared_states_uv_remap_and_qc(self):
+        from fast64_maya import texture_tools
+        from fast64_maya.vendor import glb_export
+        import struct
+        with tempfile.TemporaryDirectory() as temp:
+            files=[]
+            for state in range(2):
+                im=QImage(256,256,QImage.Format_RGBA8888);im.fill(QColor(0,0,0,0))
+                for y in range(80,144):
+                    for x in range(80,144+state*32):im.setPixelColor(x,y,QColor(200,80,40,255))
+                filename=os.path.join(temp,str(state)+'.png');im.save(filename);files.append(filename)
+            crop,reason=texture_tools.automatic_crop(files,None,True,32)
+            self.assertEqual(crop,[74,74,108,76])
+            shader,group=scene.new_material('AutoEyes')
+            cmds.setAttr(shader+'.fast64Texture',files[0],type='string')
+            texture_tools.configure(shader,32,32,True,True,files[1],auto_crop=True)
+            cmds.setAttr(shader+'.fast64WrapU',False);cmds.setAttr(shader+'.fast64WrapV',False)
+            cmds.polyPlane(subdivisionsX=1,subdivisionsY=1);cmds.sets('pPlane1',e=True,forceElement=group)
+            cmds.select('pPlane1')
+            before=cmds.polyEditUV('pPlane1.map[*]',q=True)
+            result=glb_export.export_glb(os.path.join(temp,'auto.glb'))
+            self.assertEqual(before,cmds.polyEditUV('pPlane1.map[*]',q=True))
+            qc=result['textureQC'][0];self.assertEqual(qc['cropPixels'],crop)
+            self.assertEqual(qc['affectedMeshes'][0]['faces'],[0]);self.assertTrue(qc['uvsAdjusted'])
+            self.assertEqual(qc['affectedMeshes'][0]['sourceUVIndices'],[0,1,2,3])
+            with open(result['textureQCReport']) as f:self.assertEqual(json.load(f)['textures'],result['textureQC'])
+            with open(result['path'],'rb') as f:raw=f.read()
+            size=struct.unpack_from('<I',raw,12)[0];doc=json.loads(raw[20:20+size]);binary=raw[28+size:]
+            index=doc['meshes'][0]['primitives'][0]['attributes']['TEXCOORD_0']
+            accessor=doc['accessors'][index];view=doc['bufferViews'][accessor['bufferView']]
+            coords=[struct.unpack_from('<ff',binary,view.get('byteOffset',0)+accessor.get('byteOffset',0)+i*8) for i in range(accessor['count'])]
+            self.assertAlmostEqual(min(u for u,v in coords),-74/108,places=5)
+            self.assertAlmostEqual(max(u for u,v in coords),(256-74)/108,places=5)
+            self.assertEqual(len(result['external_textures']),2)
+            cmds.setAttr(shader+'.fast64WrapU',True)
+            skipped=glb_export.export_glb(os.path.join(temp,'wrapped.glb'))['textureQC'][0]
+            self.assertFalse(skipped['cropped']);self.assertIn('wrapping',skipped['reason'])
+            crop,_=texture_tools.automatic_crop(files,[.25,.25,.5,.5],False,32)
+            self.assertEqual(crop,[62,62,68,68])
+            im=QImage(16,16,QImage.Format_RGBA8888);im.fill(QColor(1,1,1,255));im.save(files[1])
+            with self.assertRaises(ValueError):texture_tools.automatic_crop(files,None,True,32)
+
+    def test_resized_alpha_decal_and_alternate_texture(self):
+        from fast64_maya import texture_tools
+        from fast64_maya.vendor import glb_export
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            files=[]
+            for index in range(2):
+                image=QImage(256,256,QImage.Format_RGBA8888)
+                image.fill(QColor(0,0,0,0))
+                for y in range(80,144):
+                    for x in range(80,144):image.setPixelColor(x,y,QColor(200,index*80,40,128))
+                filename=os.path.join(temp,str(index)+'.png');image.save(filename);files.append(filename)
+            cmds.polyPlane()
+            source=cmds.shadingNode('blinn',asShader=True)
+            group=cmds.sets(renderable=True,noSurfaceShader=True,empty=True)
+            cmds.connectAttr(source+'.outColor',group+'.surfaceShader')
+            cmds.sets('pPlane1',e=True,forceElement=group)
+            file=cmds.shadingNode('file',asTexture=True)
+            cmds.setAttr(file+'.fileTextureName',files[0],type='string')
+            cmds.connectAttr(file+'.outColor',source+'.color')
+            cmds.connectAttr(file+'.outTransparency',source+'.transparency')
+            cmds.select('pPlane1');scene.convert_materials()
+            texture_tools.configure(source+'_F3D',32,32,True,True,files[1],[72,72,80,80])
+            self.assertEqual(cmds.ls(sl=True),['pPlane1'])
+            result=glb_export.export_glb(os.path.join(temp,'decal.glb'))
+            self.assertEqual(len(result['external_textures']),2)
+            raw=Path(result['path']).read_bytes();length=int.from_bytes(raw[12:16],'little');doc=json.loads(raw[20:20+length])
+            mat=doc['materials'][0]
+            self.assertEqual(mat['alphaMode'],'OPAQUE')
+            self.assertEqual(mat['extras']['f3d_mat']['combiner1']['C'],8)
+            self.assertEqual(mat['extensions']['FAST64_materials_n64']['combiner']['cycles'][0]['color'],['TEXEL0','SHADE','TEXEL0_ALPHA','SHADE'])
+            for name in result['external_textures']:
+                im=QImage(os.path.join(temp,name));self.assertEqual((im.width(),im.height()),(32,32))
+                self.assertEqual(im.pixelColor(0,0).alpha(),0)
+                self.assertAlmostEqual(im.pixelColor(16,16).alpha(),128,delta=2)
+            with self.assertRaises(ValueError):texture_tools.prepare_image(files[0],32,32,False)
+
     @classmethod
     def setUpClass(cls):
         cmds.loadPlugin(os.path.join(HERE, "plug-ins", "fast64Maya.py"))

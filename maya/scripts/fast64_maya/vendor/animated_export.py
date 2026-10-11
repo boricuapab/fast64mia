@@ -220,16 +220,17 @@ def export_glb(path, start=None, end=None, sample_step=1.0, clips=None):
                         animation['samplers'].append(sampler)
                 doc['animations'].append(animation)
             path.parent.mkdir(parents=True, exist_ok=True)
-            for image in doc.get('images', []):
-                if 'uri' in image:
-                    from urllib.parse import unquote
-                    filename = unquote(image['uri'])
-                    data = (Path(temp)/filename).read_bytes()
-                    output = path.parent / filename
-                    if output.exists() and output.read_bytes() != data:
-                        raise ValueError('Existing texture differs: ' + str(output))
-                    output.write_bytes(data)
+            for filename in stats.get('external_textures', []):
+                data = (Path(temp)/filename).read_bytes()
+                output = path.parent / filename
+                if output.exists() and output.read_bytes() != data:
+                    raise ValueError('Existing texture differs: ' + str(output))
+                output.write_bytes(data)
             path.write_bytes(builder.finish())
+            qc_path=str(path)+'.texture-qc.json'
+            Path(qc_path).write_text(json.dumps({'glb':str(path),'textures':stats.get('textureQC',[]),
+                'sourceUVsChanged':False},indent=2)+'\n',encoding='utf-8')
+            stats['textureQCReport']=qc_path
             stats.update({'path':str(path), 'bones':len(node_names), 'animationFrames':len(frames), 'clips':[clip['name'] for clip in clips], 'multiWeightVertices':sum(len(row)>1 for row in vertex_weights)})
             return stats
     finally:

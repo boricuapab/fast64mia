@@ -74,11 +74,15 @@ class Builder:
                 + text + struct.pack('<II', len(self.binary), 0x004E4942) + self.binary)
 
 
-def _png(filename):
+def _png(filename, settings=None):
     path = os.path.expandvars(os.path.expanduser(filename))
     if not os.path.isabs(path):
         path = cmds.workspace(expandName=path)
-    image = QImage(path)
+    if settings:
+        from ..texture_tools import prepare_image
+        image = prepare_image(path, **settings)
+    else:
+        image = QImage(path)
     if image.isNull():
         raise ValueError('Cannot load diffuse texture: '+path)
     data = QByteArray()
@@ -117,7 +121,7 @@ def _fast64_extras(mode, color, layer, cull, texture=None):
     return {'is_f3d': 1, 'mat_ver': 6, 'f3d_mat': data}
 
 
-def _material(builder, shader, output, f3d, external):
+def _material(builder, shader, output, f3d, external, usage=None):
     modes = ('VertexColor', 'TextureVertexColor', 'Primitive', 'Shaded', 'TextureShaded')
     native = bool(_attr(shader, 'fast64Material', False))
     if f3d and not native:
@@ -139,9 +143,28 @@ def _material(builder, shader, output, f3d, external):
     if layer == 'Cutout':
         mat['alphaCutoff'] = 0.5
     image_info = None
+    decal = bool(_attr(shader,'fast64AlphaOverVertex',False))
+    bits = 32 if _attr(shader,'fast64TextureBits',0) else 16
+    crop = json.loads(_attr(shader,'fast64TextureCrop','') or 'null') if f3d else None
+    crop_reason='Manual crop' if crop else 'Automatic cropping disabled'
+    alternate = _attr(shader,'fast64AlternateTexture','')
     texture_path = _attr(shader, 'fast64Texture', '')
     if mode in ('TextureShaded', 'TextureVertexColor'):
-        png, width, height, has_alpha = _png(texture_path)
+        from ..texture_tools import source_image, automatic_crop
+        original=source_image(texture_path)
+        if crop and alternate:
+            other=source_image(alternate)
+            if (original.width(),original.height())!=(other.width(),other.height()):
+                raise ValueError('Animation texture sources must have the same dimensions for shared cropping')
+        if f3d and not crop and _attr(shader,'fast64AutoCrop',False):
+            if _attr(shader,'fast64WrapU',True) or _attr(shader,'fast64WrapV',True):
+                crop_reason='Skipped: wrapping enabled; clamp both axes to allow safe cropping'
+            else:
+                crop,crop_reason=automatic_crop([texture_path]+([alternate] if alternate else []),
+                    (usage or {}).get('bounds'),decal,int(_attr(shader,'fast64TextureMax',64)))
+        settings = dict(bits=bits, maximum=int(_attr(shader,'fast64TextureMax',64)),
+                        resize=bool(_attr(shader,'fast64AutoResize',False)),crop=crop) if f3d else None
+        png, width, height, has_alpha = _png(texture_path,settings)
         wrap_s, wrap_t = bool(_attr(shader, 'fast64WrapU', True)), bool(_attr(shader, 'fast64WrapV', True))
         index = len(builder.doc.setdefault('images', []))
         if f3d:
@@ -155,24 +178,40 @@ def _material(builder, shader, output, f3d, external):
         sampler = {'magFilter':9729, 'minFilter':9729, 'wrapS':10497 if wrap_s else 33071, 'wrapT':10497 if wrap_t else 33071}
         if f3d:
             builder.extensions.add('FAST64_sampler_n64')
-            sampler['extensions'] = {'FAST64_sampler_n64': {'set':True, 'format':{'texture':'RGBA','size':16},
+            sampler['extensions'] = {'FAST64_sampler_n64': {'set':True, 'format':{'texture':'RGBA','size':bits},
                                      'fields':[{'clamp':not wrap_s,'mirror':False}, {'clamp':not wrap_t,'mirror':False}]}}
         sampler_index = len(builder.doc.setdefault('samplers', [])); builder.doc['samplers'].append(sampler)
         texture_index = len(builder.doc.setdefault('textures', []))
         builder.doc['textures'].append({'sampler':sampler_index, 'source':index})
         mat['pbrMetallicRoughness']['baseColorTexture'] = {'index':texture_index}
         image_info = (texture_name, width, height, wrap_s, wrap_t)
+        affected=(usage or {}).get('meshes',[])
+        qc={'material':shader,'sourceTextures':[texture_path]+([alternate] if alternate else []),
+            'sourceSize':[original.width(),original.height()],'exportSize':[width,height],
+            'cropped':bool(crop),'cropPixels':crop,'reason':crop_reason,
+            'uvsAdjusted':bool(crop),'affectedMeshes':affected if crop else [],
+            'uvBoundsBefore':(usage or {}).get('bounds'),'sourceUVsChanged':False,
+            'format':'RGBA'+str(bits),'tmemBytes':width*height*(bits//8)}
+        qc['exportedTextures']=[texture_name]
+        builder.doc.setdefault('extras',{}).setdefault('textureQC',[]).append(qc)
     if mode in ('VertexColor', 'TextureVertexColor', 'Primitive'):
         mat.setdefault('extensions', {})['KHR_materials_unlit'] = {}
         builder.extensions.add('KHR_materials_unlit')
     if native:
         mat['extras'] = _fast64_extras(mode, color, layer, cull, image_info)
+        if image_info:
+            mat['extras']['f3d_mat']['tex0']['tex_format'] = 1 if bits==32 else 0
+        if decal:
+            cc={'A':1,'B':4,'C':8,'D':4,'A_alpha':7,'B_alpha':7,'C_alpha':7,'D_alpha':4}
+            mat['extras']['f3d_mat'].update(combiner1=dict(cc),combiner2=dict(cc))
         # Both legacy Fast64 custom properties and Fast64 extensions are emitted.
         if mode in ('TextureShaded', 'TextureVertexColor'):
             cc_color, cc_alpha = ['TEXEL0','0','SHADE','0'], ['TEXEL0','0','SHADE','0']
         else:
             term = 'PRIMITIVE' if mode == 'Primitive' else 'SHADE'
             cc_color, cc_alpha = ['0','0','0',term], ['0','0','0',term]
+        if decal:
+            cc_color,cc_alpha=['TEXEL0','SHADE','TEXEL0_ALPHA','SHADE'],['0','0','0','SHADE']
         n64 = {'combiner':{'set':True, 'cycles':[{'color':cc_color, 'alpha':cc_alpha}]},
                'otherModes':{'textureFilter':'BILERP', 'perspectiveCorrection':'PERSP'}, 'textures':{},
                'extensions':{'FAST64_materials_f3d':{'geometryMode':{
@@ -185,7 +224,22 @@ def _material(builder, shader, output, f3d, external):
         builder.extensions.update(('FAST64_materials_n64','FAST64_materials_f3d'))
     builder.doc['materials'].append(mat)
     vertex_tint = (1,1,1,color[3]) if mode in ('VertexColor','TextureVertexColor') else color
-    return len(builder.doc['materials'])-1, {'mode':mode, 'color':vertex_tint,
+    if f3d and image_info and alternate:
+        alternate_png,aw,ah,_ = _png(alternate,settings)
+        if (aw,ah)!=(width,height):
+            raise ValueError('Animation textures must share dimensions')
+        alternate_name=os.path.splitext(os.path.basename(output))[0]+'_tex_'+hashlib.sha256(alternate_png).hexdigest()[:12]+'.png'
+        external[alternate_name]=alternate_png
+        qc['exportedTextures'].append(alternate_name)
+        mat['extras']['mayaTextureAnimation']={'open':texture_name,'closed':alternate_name,'cycleFrames':24}
+    crop_uv=None
+    if crop:
+        original=source_image(texture_path)
+        crop_uv=(crop[0]/original.width(),1-(crop[1]+crop[3])/original.height(),crop[2]/original.width(),crop[3]/original.height())
+        qc['uvTransform']={'offset':[crop[0]/original.width(),crop[1]/original.height()],
+                           'scale':[original.width()/crop[2],original.height()/crop[3]],
+                           'convention':'glTF UV, after Maya V flip and material placement'}
+    return len(builder.doc['materials'])-1, {'mode':mode, 'color':vertex_tint,'crop':crop_uv,
         'repeat':(_attr(shader,'fast64RepeatU',1),_attr(shader,'fast64RepeatV',1)),
         'offset':(_attr(shader,'fast64OffsetU',0),_attr(shader,'fast64OffsetV',0))}
 
@@ -202,6 +256,36 @@ def export_glb(path, selected=True, f3d=True):
     if not meshes:
         raise ValueError('Select the polygon mesh to export')
     builder, external, material_map = Builder(), {}, {}
+    # Include every exported face before choosing a shared crop for a material.
+    usage={}
+    for mesh in meshes:
+        sl=om.MSelectionList();sl.add(mesh);dag=sl.getDagPath(0);fn=om.MFnMesh(dag)
+        groups,indices=fn.getConnectedShaders(dag.instanceNumber())
+        uvsets=fn.getUVSetNames();uvset='UVMap' if 'UVMap' in uvsets else fn.currentUVSetName() if uvsets else None
+        polygon=om.MItMeshPolygon(dag)
+        local={}
+        local_uvs={}
+        while not polygon.isDone():
+            face=polygon.index();index=indices[face]
+            if index<0:raise ValueError(mesh+': face has no material')
+            group=om.MFnDependencyNode(groups[index]).name()
+            shader=(cmds.listConnections(group+'.surfaceShader',s=True,d=False) or [None])[0]
+            if not shader:raise ValueError(group+': no surface shader')
+            item=usage.setdefault(shader,{'bounds':None,'meshes':[]})
+            local.setdefault(shader,[]).append(face)
+            if uvset:
+                for corner in range(len(polygon.getVertices())):
+                    try:
+                        u,v=polygon.getUV(corner,uvset)
+                        local_uvs.setdefault(shader,set()).add(polygon.getUVIndex(corner,uvset))
+                    except RuntimeError:continue
+                    u=u*_attr(shader,'fast64RepeatU',1)+_attr(shader,'fast64OffsetU',0)
+                    v=1-(v*_attr(shader,'fast64RepeatV',1)+_attr(shader,'fast64OffsetV',0))
+                    b=item['bounds'];item['bounds']=[min(b[0],u),min(b[1],v),max(b[2],u),max(b[3],v)] if b else [u,v,u,v]
+            polygon.next()
+        for shader,faces in local.items():
+            usage[shader]['meshes'].append({'mesh':mesh,'uvSet':uvset,'faces':faces,
+                'sourceUVIndices':sorted(local_uvs.get(shader,[]))})
     z_up = cmds.upAxis(query=True, axis=True) == 'z'
     triangle_count = vertex_count = 0
     def axis(v, scale=1):
@@ -232,7 +316,7 @@ def export_glb(path, selected=True, f3d=True):
                 raise ValueError(group+': no single surface shader')
             shader=shaders[0]
             if shader not in material_map:
-                material_map[shader]=_material(builder,shader,path,f3d,external)
+                material_map[shader]=_material(builder,shader,path,f3d,external,usage.get(shader))
             material_index, settings=material_map[shader]
             storage=groups.setdefault(material_index, {'values':[], 'lookup':{}, 'indices':[]})
             points, ids=polygon.getTriangles(om.MSpace.kWorld)
@@ -252,6 +336,9 @@ def export_glb(path, selected=True, f3d=True):
                         try:
                             u,v=polygon.getUV(face_vertices.index(vid),uvset)
                             uv=(u*settings['repeat'][0]+settings['offset'][0],1-(v*settings['repeat'][1]+settings['offset'][1]))
+                            if settings.get('crop'):
+                                x,y,w,h=settings['crop']
+                                uv=((uv[0]-x)/w,(uv[1]-(1-y-h))/h)
                         except RuntimeError:
                             if settings['mode'] in ('TextureShaded','TextureVertexColor'):
                                 raise ValueError(mesh+': textured face is missing UVs')
@@ -293,7 +380,10 @@ def export_glb(path, selected=True, f3d=True):
     payload=builder.finish()
     directory=os.path.dirname(path); os.makedirs(directory,exist_ok=True)
     # Validate all geometry/materials before publishing any output.
-    files=[(os.path.join(directory,name),data) for name,data in external.items()]+[(path,payload)]
+    qc=builder.doc.get('extras',{}).get('textureQC',[])
+    report_path=path+'.texture-qc.json'
+    report={'glb':path,'textures':qc,'sourceUVsChanged':False}
+    files=[(os.path.join(directory,name),data) for name,data in external.items()]+[(report_path,(json.dumps(report,indent=2)+'\n').encode()),(path,payload)]
     for output,data in files:
         if os.path.exists(output):
             with open(output,'rb') as stream:
@@ -310,4 +400,5 @@ def export_glb(path, selected=True, f3d=True):
         finally:
             if os.path.exists(temporary): os.unlink(temporary)
     return {'path':path,'meshes':len(builder.doc['meshes']),'materials':len(builder.doc['materials']),
-            'triangles':triangle_count,'vertices':vertex_count,'external_textures':list(external)}
+            'triangles':triangle_count,'vertices':vertex_count,'external_textures':list(external),
+            'textureQC':qc,'textureQCReport':report_path}

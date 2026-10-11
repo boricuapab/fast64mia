@@ -261,6 +261,8 @@ def load_texture(filename):
 
 
 def material_description(shader, textures, require_texture=True):
+    if require_texture and (attr(shader,'fast64AlphaOverVertex',False) or attr(shader,'fast64TextureBits',0)):
+        raise ValueError('Alpha decals and RGBA32 materials currently require F3D GLB export')
     if not attr(shader, "fast64Material", False):
         raise ValueError("{} is not an F3D material; use Convert Maya Materials first".format(shader))
     mode = MODES[attr(shader, "fast64Mode", 3)]
