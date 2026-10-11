@@ -101,8 +101,33 @@ material extras/extensions, painted RGBA, UVs, split normals, and per-face
 materials. PNG companions use paths relative to the GLB; distribute them together.
 Choose a new output filename; differing existing outputs are protected.
 
-This export captures the current evaluated pose as static geometry. It does
-not export skeletons, animation, animated visibility, or texture-switch scripts.
+Unskinned meshes export the current evaluated pose as static geometry. Selecting
+one linearly skinned mesh exports its bind geometry, up to four skin influences
+per vertex, joint hierarchy, and the playback range as `animation_00`. Animation
+is sampled at each scene frame. The mesh must use Y-up coordinates; animated
+shear, dual-quaternion skinning, animated skin envelopes, and coincident vertices
+with different weights are rejected. Maya time, selection, and skin envelope
+are restored after export. This does not export animated visibility or
+texture-switch scripts. Consumers that support only one joint per vertex use
+the strongest influence; full glTF skin weights are retained in the file.
+
+### Multiple animations on one rig
+
+Author clips in separate timeline ranges on the same skeleton, such as idle
+on frames 1–24 and walk on frames 25–48. Key all animated joints at each clip's
+start and end to make its pose independent of the surrounding timeline.
+Select the character mesh, open **Animation Clips...** in Fast64 Tools, and save:
+
+```text
+idle, 1, 24
+walk, 25, 48
+```
+
+The named ranges are saved in the mesh transform's `fast64AnimationClips`
+attribute with the Maya scene. **Export Selected F3D GLB...** exports each range
+as a separate glTF animation starting at time zero. Without named ranges, the
+playback range exports as `animation_00`. Exporting doesn't create new motion;
+you must animate the additional range first.
 
 For colored painting, first use **Use Painted Vertex Colors in F3D Export**.
 These modes preserve painted RGB directly instead of multiplying it by the
@@ -166,7 +191,7 @@ containing JSON, following Maya's Python command result conversion.
 
 ## Current limitations
 
-SM64 geolayouts, level objects, animation/rigs, ROM/binary import/export, Ocarina
+SM64 geolayouts, level objects, SM64 animation/geolayout export, ROM/binary import/export, Ocarina
 of Time scenes/rooms/actors/collision, Mario Kart tools, F3DEX3, custom combiners,
 CI/IA/I textures, multi-texture materials, large-texture tiling, texture scroll,
 and other Blender Fast64 tools are **not ported**. This initial native plugin

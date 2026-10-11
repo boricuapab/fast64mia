@@ -225,6 +225,57 @@ class NativeTests(unittest.TestCase):
             for actual, expected in zip(rgba, (0.2, 0.4, 0.8, 0.5)):
                 self.assertAlmostEqual(actual, expected, places=6)
 
+    def test_skinned_glb_export_and_state_restoration(self):
+        from fast64_maya import attributes
+        from fast64_maya.vendor import animated_export
+        mesh, _, _ = self.assigned()
+        scene.convert_materials()
+        paint.use_for_export()
+        attributes.prepare()
+        cmds.select(clear=True)
+        root = cmds.joint(name="exportRoot", position=(0, 0, 0))
+        child = cmds.joint(name="exportChild", position=(0, 1, 0))
+        skin = cmds.skinCluster(root, child, mesh, toSelectedBones=True)[0]
+        cmds.skinPercent(skin, mesh + ".vtx[*]", transformValue=[(root, .25), (child, .75)])
+        cmds.setKeyframe(child, attribute="translateX", time=1, value=0)
+        cmds.setKeyframe(child, attribute="translateX", time=2, value=2)
+        cmds.currentTime(2)
+        cmds.select(mesh)
+        selection = cmds.ls(selection=True, long=True)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "animated.glb")
+            stats = animated_export.export_glb(path, start=1, end=2)
+            self.assertEqual(stats["animationFrames"], 2)
+            doc, binary = animated_export.read_static(path)
+            self.assertEqual(len(doc["skins"]), 1)
+            self.assertEqual(doc["animations"][0]["name"], "animation_00")
+            primitive = doc["meshes"][0]["primitives"][0]
+            weights = animated_export.accessor(doc, binary, primitive["attributes"]["WEIGHTS_0"])
+            self.assertAlmostEqual(weights[0][0], .75)
+            self.assertAlmostEqual(weights[0][1], .25)
+            self.assertEqual(cmds.currentTime(query=True), 2)
+            self.assertEqual(cmds.getAttr(skin + ".envelope"), 1)
+            self.assertEqual(cmds.ls(selection=True, long=True), selection)
+            cmds.setKeyframe(child, attribute="translateX", time=3, value=4)
+            cmds.addAttr(mesh, longName="fast64AnimationClips", dataType="string")
+            clips = [{"name":"idle", "start":1, "end":2}, {"name":"move", "start":2, "end":3}]
+            cmds.setAttr(mesh + ".fast64AnimationClips", json.dumps(clips), type="string")
+            multi = os.path.join(directory, "two_clips.glb")
+            result = animated_export.export_glb(multi)
+            self.assertEqual(result["clips"], ["idle", "move"])
+            two, binary = animated_export.read_static(multi)
+            self.assertEqual([clip["name"] for clip in two["animations"]], ["idle", "move"])
+            import struct
+            for clip in two["animations"]:
+                times = two["accessors"][clip["samplers"][0]["input"]]
+                view = two["bufferViews"][times["bufferView"]]
+                first, last = struct.unpack_from("<2f", binary, view["byteOffset"])
+                self.assertEqual(first, 0)
+                self.assertAlmostEqual(last, 1 / 24, places=6)
+            self.assertEqual(cmds.currentTime(query=True), 2)
+            with self.assertRaises(ValueError):
+                animated_export.validate_clips([clips[0], clips[0]])
+
     def test_command_and_plugin_lifecycle(self):
         self.assigned()
         raw = cmds.fast64(convert=True)

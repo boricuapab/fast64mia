@@ -121,6 +121,7 @@ def show(*_):
     cmds.button(label="Validate Selected Meshes and Materials", command=lambda *_: safely(validate))
     cmds.button(label="Export F3D Display List C", command=lambda *_: safely(export))
     cmds.button(label="Export Static SM64 Collision C", command=lambda *_: safely(export, True))
+    cmds.button(label="Animation Clips…", command=lambda *_: safely(show_animation_clips))
     cmds.button(label="Export Selected F3D GLB…", command=lambda *_: safely(export_glb))
     cmds.text(label="World-space evaluated meshes. Textures: power-of-two RGBA16, maximum 4 KiB.", align="left")
     cmds.text(label="Exports to directory/asset_name; existing outputs are protected.", align="left")
@@ -132,12 +133,21 @@ def show(*_):
     return window
 
 
+def show_animation_clips():
+    from . import animation_clips
+    return animation_clips.show()
+
+
 def export_glb():
     from .vendor import glb_export
     result = cmds.fileDialog2(fileMode=0, fileFilter="glTF Binary (*.glb)", caption="Export selected F3D meshes")
     if not result:
         return {"cancelled": True}
     attributes.prepare()
+    meshes = scene.selected_meshes()
+    if any(cmds.ls(cmds.listHistory(mesh), type="skinCluster") for mesh in meshes):
+        from .vendor import animated_export
+        return animated_export.export_glb(result[0])
     return glb_export.export_glb(result[0], selected=True, f3d=True)
 
 
